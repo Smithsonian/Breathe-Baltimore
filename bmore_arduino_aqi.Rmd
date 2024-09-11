@@ -1,0 +1,420 @@
+---
+title: "bmore_arduino_aqi"
+author: "Leona Neftaliem"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, error = FALSE)
+```
+
+#Libraries
+```{r}
+library(dplyr)
+library(lubridate)
+library(tidyverse)
+library(dplyr)
+library(zoo)
+library(data.table)
+library(ggmap)
+library(ggplot2)
+
+```
+
+
+##Clean
+```{r}
+# Load necessary libraries
+library(data.table)
+library(ggplot2)
+
+# Step 1: Load and Prepare the Dataset
+aqi_test <- fread("~/Dropbox/Bmore_AQI/Data/AQLSP_SERC_2024.csv")
+
+# Rename columns to make them more readable
+setnames(aqi_test, c("timestamp", "arduino_id", "program", "bme_temp_c", "bme_pressure_hpa", 
+                     "bme_humidity_percent", "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", 
+                     "ozone_ppm", "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3", 
+                     "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
+
+# Step 2: Add New Columns with Default Values
+aqi_test[, `:=`(
+  long = NA_real_,
+  lat = NA_real_,
+  neighborhood = NA_character_,
+  vulnerability_score = NA_real_,
+  vulnerability_level = NA_character_,
+  land_use_code = NA_character_
+)]
+
+# Reorder the columns for better organization
+setcolorder(aqi_test, c("timestamp", "long", "lat", "neighborhood", 
+                        "vulnerability_score", "vulnerability_level", 
+                        "land_use_code", "arduino_id", "program", 
+                        "bme_temp_c", "bme_pressure_hpa", "bme_humidity_percent", 
+                        "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", "ozone_ppm", 
+                        "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3",
+                        "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
+
+# Step 3: Data Cleaning - Replace invalid values (-7999) with NA
+aqi_test[aqi_test == -7999] <- NA
+
+# Step 4: Convert to POSIXct with 24-Hour Time Format
+aqi_test[, timestamp := as.POSIXct(timestamp, format = "%Y/%m/%d %I:%M:%S %p")]
+
+# Step 5: Floor to the nearest hour
+library(lubridate)
+aqi_test[, timestamp_hour := floor_date(timestamp, unit = "hour")]
+
+# Step 6: Compute Hourly Averages for PM2.5 and PM10 Data
+hourly_avg <- aqi_test[, .(
+  sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
+  sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
+  sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
+  sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
+  bme_humidity_percent_avg  = mean(bme_humidity_percent, na.rm = TRUE),
+  ozone_ppm_avg  = mean(ozone_ppm, na.rm = TRUE)
+), by = timestamp_hour]
+
+# Convert the timestamp to daily timestamps
+aqi_test[, timestamp_day := floor_date(timestamp, unit = "day")]
+
+# Compute Daily Averages for PM2.5, PM10, Temperature, Humidity, and Ozone Data
+daily_avg <- aqi_test[, .(
+  sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
+  sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
+  sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
+  sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
+  bme_humidity_percent_avg  = mean(bme_humidity_percent, na.rm = TRUE),
+  ozone_ppm_avg  = mean(ozone_ppm, na.rm = TRUE)
+), by = timestamp_day]
+
+# View the first few rows of the daily average data
+head(daily_avg)
+
+```
+
+##Hourly Graphics
+```{r}
+#PM2.5
+# Convert hourly_avg to data.frame for ggplot
+hourly_avg <- as.data.frame(hourly_avg)
+hourly_avg <- hourly_avg %>%
+  mutate(day = floor_date(timestamp_hour, unit = "day"))
+
+# Step 6: Plot the Hourly Averaged Data for PM2.5 with vibrant colors
+pm25 <- ggplot(hourly_avg, aes(x = timestamp_hour)) +
+  geom_line(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), size = 1) +  # First y axis
+  geom_line(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), size = 1, linetype = "dashed") +  # Second y axis
+  scale_y_continuous(
+    name = "Sensor 1 PM2.5 (µg/m³)", 
+    sec.axis = sec_axis(~ ., name = "Sensor 2 PM2.5 (µg/m³)")
+  ) +
+  scale_color_manual(values = c("Sensor 1 PM2.5" = "#FF5733", "Sensor 2 PM2.5" = "#007AFF")) + 
+  labs(x = "Timestamp (Hourly Average)", 
+       color = "PM2.5 Sensors", 
+       title = "Hourly Averaged PM2.5 Concentrations",
+       subtitle = "Comparison of Sensor 1 and Sensor 2") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(color = "#FF5733"),
+    axis.title.y.right = element_text(color = "#007AFF"),
+    legend.position = "top",
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+# Step 7: Display the Plot
+print(pm25)
+
+#PM10
+# Plot the Hourly Averaged Data for PM10 with vibrant colors
+pm10 <- ggplot(hourly_avg, aes(x = timestamp_hour)) +
+  geom_line(aes(y = sensor1_pm10_ugm3_avg, color = "Sensor 1 PM10"), size = 1) +  # First y axis
+  geom_line(aes(y = sensor2_pm10_ugm3_avg, color = "Sensor 2 PM10"), size = 1, linetype = "dashed") +  # Second y axis
+  scale_y_continuous(
+    name = "Sensor 1 PM10 (µg/m³)", 
+    sec.axis = sec_axis(~ ., name = "Sensor 2 PM10 (µg/m³)")
+  ) +
+  scale_color_manual(values = c("Sensor 1 PM10" = "#FF5733", "Sensor 2 PM10" = "#007AFF")) +
+  labs(x = "Timestamp (Hourly Average)", 
+       color = "PM10 Sensors", 
+       title = "Hourly Averaged PM10 Concentrations",
+       subtitle = "Comparison of Sensor 1 and Sensor 2") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(color = "#FF5733"),
+    axis.title.y.right = element_text(color = "#007AFF"),
+    legend.position = "top",
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+# Display the PM10 plot
+print(pm10)
+
+#PM2.5 and Temp (C)
+
+p_temp_pm25_heatmap <- ggplot(hourly_avg, aes(x = bme_temp_c_avg, y = sensor1_pm2.5_ugm3_avg)) +
+  geom_bin2d(bins = 30, aes(fill = ..count..)) +
+  scale_fill_viridis_c(option = "plasma") +
+  labs(x = "Average Temperature (°C)", 
+       y = "Average PM2.5 (µg/m³)",
+       fill = "Count",
+       title = "Heatmap of PM2.5 Concentrations") +
+  theme_minimal(base_size = 14)
+
+p_temp_pm25_heatmap
+
+#-------
+# Load necessary library for correlation calculation
+library(ggpubr)
+
+# Calculate correlation between PM2.5 and temperature
+cor_temp_pm25_sensor1 <- cor(hourly_avg$bme_temp_c_avg, hourly_avg$sensor1_pm2.5_ugm3_avg, use = "complete.obs")
+cor_temp_pm25_sensor2 <- cor(hourly_avg$bme_temp_c_avg, hourly_avg$sensor2_pm2.5_ugm3_avg, use = "complete.obs")
+
+# Calculate correlation between PM2.5 and humidity
+cor_humidity_pm25_sensor1 <- cor(hourly_avg$bme_humidity_percent_avg, hourly_avg$sensor1_pm2.5_ugm3_avg, use = "complete.obs")
+cor_humidity_pm25_sensor2 <- cor(hourly_avg$bme_humidity_percent_avg, hourly_avg$sensor2_pm2.5_ugm3_avg, use = "complete.obs")
+
+# Scatter plot with LOESS smoothing for temperature vs PM2.5 with correlation annotations
+p_temp_pm25_loess <- ggplot(hourly_avg, aes(x = bme_temp_c_avg)) +
+  geom_point(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), size = 2, alpha = 0.6) +
+  geom_point(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), size = 2, alpha = 0.6) +
+  geom_smooth(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), method = "loess", se = FALSE) +
+  geom_smooth(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), method = "loess", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = c("Sensor 1 PM2.5" = "#FF5733", "Sensor 2 PM2.5" = "#007AFF")) +
+  labs(x = "Average Temperature (°C)", 
+       y = "Average PM2.5 (µg/m³)",
+       color = "PM2.5 Sensors",
+       title = "PM2.5 Concentrations vs Temperature") +
+  annotate("text", x = min(hourly_avg$bme_temp_c_avg, na.rm = TRUE), 
+           y = max(hourly_avg$sensor1_pm2.5_ugm3_avg, na.rm = TRUE), 
+           label = paste("r =", round(cor_temp_pm25_sensor1, 2)), 
+           hjust = 0, color = "#FF5733", size = 5) +
+  annotate("text", x = min(hourly_avg$bme_temp_c_avg, na.rm = TRUE), 
+           y = max(hourly_avg$sensor2_pm2.5_ugm3_avg, na.rm = TRUE) - 5, 
+           label = paste("r =", round(cor_temp_pm25_sensor2, 2)), 
+           hjust = 0, color = "#007AFF", size = 5) +
+  theme_minimal(base_size = 14)
+
+# Print the temperature plot
+print(p_temp_pm25_loess)
+
+# Scatter plot with LOESS smoothing for humidity vs PM2.5 with correlation annotations
+p_humidity_pm25_loess <- ggplot(hourly_avg, aes(x = bme_humidity_percent_avg)) +
+  geom_point(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), size = 2, alpha = 0.6) +
+  geom_point(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), size = 2, alpha = 0.6) +
+  geom_smooth(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), method = "loess", se = FALSE) +
+  geom_smooth(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), method = "loess", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = c("Sensor 1 PM2.5" = "#FF5733", "Sensor 2 PM2.5" = "#007AFF")) +
+  labs(x = "Average Humidity (%)", 
+       y = "Average PM2.5 (µg/m³)",
+       color = "PM2.5 Sensors",
+       title = "PM2.5 Concentrations vs Humidity") +
+  annotate("text", x = min(hourly_avg$bme_humidity_percent_avg, na.rm = TRUE), 
+           y = max(hourly_avg$sensor1_pm2.5_ugm3_avg, na.rm = TRUE), 
+           label = paste("r =", round(cor_humidity_pm25_sensor1, 2)), 
+           hjust = 0, color = "#FF5733", size = 5) +
+  annotate("text", x = min(hourly_avg$bme_humidity_percent_avg, na.rm = TRUE), 
+           y = max(hourly_avg$sensor2_pm2.5_ugm3_avg, na.rm = TRUE) - 5, 
+           label = paste("r =", round(cor_humidity_pm25_sensor2, 2)), 
+           hjust = 0, color = "#007AFF", size = 5) +
+  theme_minimal(base_size = 14)
+
+# Print the humidity plot
+print(p_humidity_pm25_loess)
+
+#----- Ozone
+# Create a LOESS plot
+ggplot(hourly_avg, aes(x = timestamp_hour, y = ozone_ppm_avg)) +
+  geom_point(color = "blue", alpha = 0.5) +  # Scatter plot of the data
+  geom_smooth(method = "loess", color = "red", se = TRUE) +  # LOESS smoothing line with confidence interval
+  labs(
+    title = "Hourly Averaged Ozone Levels",
+    x = "Timestamp",
+    y = "Ozone (ppm)"
+  ) +
+  theme_minimal(base_size = 15) +  # Clean theme with larger text
+  #scale_x_datetime(labels = date_format("%Y-%m-%d %H:%M"), date_breaks = "1 day") +  # Better date format for x-axis
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+
+#Ultimately: make a census tract level of green to red
+##Color codes (green to red): 0-7 (green), 7-8, 89, 9-10, 10-11, 11-12, 12-30 (red) with PM2.5 level
+```
+
+##Daily Avg Graphics
+```{r}
+library(ggplot2)
+library(dplyr)
+
+#PM2.5
+# Convert daily_avg to data.frame for ggplot
+daily_avg <- as.data.frame(daily_avg)
+daily_avg <- daily_avg %>%
+  mutate(day = floor_date(timestamp_day, unit = "day"))
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+
+# Convert daily_avg to data.frame for ggplot
+daily_avg <- as.data.frame(daily_avg)
+daily_avg <- daily_avg %>%
+  mutate(day = floor_date(timestamp_day, unit = "day"))
+
+# Plot the Daily Averaged Data for PM2.5 with vibrant colors and reference line
+pm25 <- ggplot(daily_avg, aes(x = timestamp_day)) +
+  geom_line(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), size = 1) +  # First y axis
+  geom_line(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), size = 1, linetype = "dashed") +  # Second y axis
+  geom_hline(yintercept = 35, linetype = "dotted", color = "red") +  # Reference line
+  scale_y_continuous(
+    name = "Sensor 1 PM2.5 (µg/m³)", 
+    sec.axis = sec_axis(~ ., name = "Sensor 2 PM2.5 (µg/m³)")
+  ) +
+  scale_color_manual(values = c("Sensor 1 PM2.5" = "#FF5733", "Sensor 2 PM2.5" = "#007AFF")) + 
+  labs(x = "Timestamp (Daily Average)", 
+       color = "PM2.5 Sensors", 
+       title = "Daily Averaged PM2.5 Concentrations",
+       subtitle = "Comparison of Sensor 1 and Sensor 2") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(color = "#FF5733"),
+    axis.title.y.right = element_text(color = "#007AFF"),
+    legend.position = "top",
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+# Print the plot
+print(pm25)
+
+#PM10
+# Plot the Daily Averaged Data for PM10 with vibrant colors
+pm10 <- ggplot(daily_avg, aes(x = timestamp_day)) +
+  geom_line(aes(y = sensor1_pm10_ugm3_avg, color = "Sensor 1 PM10"), size = 1) +  # First y axis
+  geom_line(aes(y = sensor2_pm10_ugm3_avg, color = "Sensor 2 PM10"), size = 1, linetype = "dashed") +  # Second y axis
+  scale_y_continuous(
+    name = "Sensor 1 PM10 (µg/m³)", 
+    sec.axis = sec_axis(~ ., name = "Sensor 2 PM10 (µg/m³)")
+  ) +
+  scale_color_manual(values = c("Sensor 1 PM10" = "#FF5733", "Sensor 2 PM10" = "#007AFF")) +
+  labs(x = "Timestamp (Daily Average)", 
+       color = "PM10 Sensors", 
+       title = "Daily Averaged PM10 Concentrations",
+       subtitle = "Comparison of Sensor 1 and Sensor 2") +
+  theme_minimal() +
+  theme(
+    axis.title.y = element_text(color = "#FF5733"),
+    axis.title.y.right = element_text(color = "#007AFF"),
+    legend.position = "top",
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+# Display the PM10 plot
+print(pm10)
+
+#PM2.5 and Temp (C)
+
+p_temp_pm25_heatmap <- ggplot(daily_avg, aes(x = bme_temp_c_avg, y = sensor1_pm2.5_ugm3_avg)) +
+  geom_bin2d(bins = 30, aes(fill = ..count..)) +
+  scale_fill_viridis_c(option = "plasma") +
+  labs(x = "Average Temperature (°C)", 
+       y = "Average PM2.5 (µg/m³)",
+       fill = "Count",
+       title = "Heatmap of PM2.5 Concentrations") +
+  theme_minimal(base_size = 14)
+
+p_temp_pm25_heatmap
+
+#-------
+# Load necessary library for correlation calculation
+library(ggpubr)
+
+# Calculate correlation between PM2.5 and temperature
+cor_temp_pm25_sensor1 <- cor(daily_avg$bme_temp_c_avg, daily_avg$sensor1_pm2.5_ugm3_avg, use = "complete.obs")
+cor_temp_pm25_sensor2 <- cor(daily_avg$bme_temp_c_avg, daily_avg$sensor2_pm2.5_ugm3_avg, use = "complete.obs")
+
+# Calculate correlation between PM2.5 and humidity
+cor_humidity_pm25_sensor1 <- cor(daily_avg$bme_humidity_percent_avg, daily_avg$sensor1_pm2.5_ugm3_avg, use = "complete.obs")
+cor_humidity_pm25_sensor2 <- cor(daily_avg$bme_humidity_percent_avg, daily_avg$sensor2_pm2.5_ugm3_avg, use = "complete.obs")
+
+# Scatter plot with LOESS smoothing for temperature vs PM2.5 with correlation annotations
+p_temp_pm25_loess <- ggplot(daily_avg, aes(x = bme_temp_c_avg)) +
+  geom_point(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), size = 2, alpha = 0.6) +
+  geom_point(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), size = 2, alpha = 0.6) +
+  geom_smooth(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), method = "loess", se = FALSE) +
+  geom_smooth(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), method = "loess", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = c("Sensor 1 PM2.5" = "#FF5733", "Sensor 2 PM2.5" = "#007AFF")) +
+  labs(x = "Average Temperature (°C)", 
+       y = "Average PM2.5 (µg/m³)",
+       color = "PM2.5 Sensors",
+       title = "PM2.5 Concentrations vs Temperature") +
+  annotate("text", x = min(daily_avg$bme_temp_c_avg, na.rm = TRUE), 
+           y = max(daily_avg$sensor1_pm2.5_ugm3_avg, na.rm = TRUE), 
+           label = paste("r =", round(cor_temp_pm25_sensor1, 2)), 
+           hjust = 0, color = "#FF5733", size = 5) +
+  annotate("text", x = min(daily_avg$bme_temp_c_avg, na.rm = TRUE), 
+           y = max(daily_avg$sensor2_pm2.5_ugm3_avg, na.rm = TRUE) - 5, 
+           label = paste("r =", round(cor_temp_pm25_sensor2, 2)), 
+           hjust = 0, color = "#007AFF", size = 5) +
+  theme_minimal(base_size = 14)
+
+# Print the temperature plot
+print(p_temp_pm25_loess)
+
+# Scatter plot with LOESS smoothing for humidity vs PM2.5 with correlation annotations
+p_humidity_pm25_loess <- ggplot(daily_avg, aes(x = bme_humidity_percent_avg)) +
+  geom_point(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), size = 2, alpha = 0.6) +
+  geom_point(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), size = 2, alpha = 0.6) +
+  geom_smooth(aes(y = sensor1_pm2.5_ugm3_avg, color = "Sensor 1 PM2.5"), method = "loess", se = FALSE) +
+  geom_smooth(aes(y = sensor2_pm2.5_ugm3_avg, color = "Sensor 2 PM2.5"), method = "loess", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = c("Sensor 1 PM2.5" = "#FF5733", "Sensor 2 PM2.5" = "#007AFF")) +
+  labs(x = "Average Humidity (%)", 
+       y = "Average PM2.5 (µg/m³)",
+       color = "PM2.5 Sensors",
+       title = "PM2.5 Concentrations vs Humidity") +
+  annotate("text", x = min(daily_avg$bme_humidity_percent_avg, na.rm = TRUE), 
+           y = max(daily_avg$sensor1_pm2.5_ugm3_avg, na.rm = TRUE), 
+           label = paste("r =", round(cor_humidity_pm25_sensor1, 2)), 
+           hjust = 0, color = "#FF5733", size = 5) +
+  annotate("text", x = min(daily_avg$bme_humidity_percent_avg, na.rm = TRUE), 
+           y = max(daily_avg$sensor2_pm2.5_ugm3_avg, na.rm = TRUE) - 5, 
+           label = paste("r =", round(cor_humidity_pm25_sensor2, 2)), 
+           hjust = 0, color = "#007AFF", size = 5) +
+  theme_minimal(base_size = 14)
+
+# Print the humidity plot
+print(p_humidity_pm25_loess)
+
+#----- Ozone
+# Create a LOESS plot
+ggplot(daily_avg, aes(x = timestamp_day, y = ozone_ppm_avg)) +
+  geom_point(color = "blue", alpha = 0.5) +  # Scatter plot of the data
+  geom_smooth(method = "loess", color = "red", se = TRUE) +  # LOESS smoothing line with confidence interval
+  labs(
+    title = "Daily Averaged Ozone Levels",
+    x = "Timestamp",
+    y = "Ozone (ppm)"
+  ) +
+  theme_minimal(base_size = 15) +  # Clean theme with larger text
+  #scale_x_datetime(labels = date_format("%Y-%m-%d %H:%M"), date_breaks = "1 day") +  # Better date format for x-axis
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+
+```
+
+Next:
+  - make a census tract map with aqi 
+  - Color codes (green to red): 0-7 (green), 7-8, 89, 9-10, 10-11, 11-12, 12-30 (red) with PM2.5 level
+  - when neighborhoods come in, do autocorrelation analysis + code
+  - when all data comes in across all neighborhoods, do spatial econ regression
+
