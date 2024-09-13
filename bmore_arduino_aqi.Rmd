@@ -19,11 +19,11 @@ library(zoo)
 library(data.table)
 library(ggmap)
 library(ggplot2)
-
+library(viridis)
 ```
 
 
-##Clean
+#Clean
 ```{r}
 # Load necessary libraries
 library(data.table)
@@ -97,7 +97,7 @@ head(daily_avg)
 
 ```
 
-##Hourly Graphics
+#PM Hourly Graphics
 ```{r}
 #PM2.5
 # Convert hourly_avg to data.frame for ggplot
@@ -249,7 +249,7 @@ ggplot(hourly_avg, aes(x = timestamp_hour, y = ozone_ppm_avg)) +
 ##Color codes (green to red): 0-7 (green), 7-8, 89, 9-10, 10-11, 11-12, 12-30 (red) with PM2.5 level
 ```
 
-##Daily Avg Graphics
+#PM Daily Avg Graphics
 ```{r}
 library(ggplot2)
 library(dplyr)
@@ -412,6 +412,139 @@ ggplot(daily_avg, aes(x = timestamp_day, y = ozone_ppm_avg)) +
 
 ```
 
+#AQI Graphs
+```{r}
+
+# Function to calculate AQI from PM2.5
+calculate_aqi_pm25 <- function(pm25) {
+  if (pm25 <= 9.0) {
+    return(50 * pm25 / 9)  # Good
+  } else if (pm25 <= 35.4) {
+    return(50 + (100 - 50) * (pm25 - 9.1) / (35.4 - 9.1))  # Moderate
+  } else if (pm25 <= 55.4) {
+    return(100 + (150 - 100) * (pm25 - 35.5) / (55.4 - 35.5))  # Unhealthy for Sensitive Groups
+  } else if (pm25 <= 125.4) {
+    return(150 + (200 - 150) * ((pm25 - 55.5)^3) / ((125.4 - 55.5)^3))  # Unhealthy
+  } else if (pm25 <= 225.4) {
+    return(200 + (300 - 200) * ((pm25 - 125.5)^3) / ((225.4 - 125.5)^3))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+# Function to calculate AQI from PM10
+calculate_aqi_pm10 <- function(pm10) {
+  if (pm10 <= 54) {
+    return(50 * pm10 / 54)  # Good
+  } else if (pm10 <= 154) {
+    return(50 + (100 - 50) * (pm10 - 55) / (154 - 55))  # Moderate
+  } else if (pm10 <= 254) {
+    return(100 + (150 - 100) * (pm10 - 155) / (254 - 155))  # Unhealthy for Sensitive Groups
+  } else if (pm10 <= 354) {
+    return(150 + (200 - 150) * (pm10 - 255) / (354 - 255))  # Unhealthy
+  } else if (pm10 <= 424) {
+    return(200 + (300 - 200) * (pm10 - 355) / (424 - 355))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+
+# Function to calculate AQI from Ozone 
+calculate_aqi_o3 <- function(o3) {
+  if (is.na(o3)) {
+    return(NA)  # Return NA if o3 is NA
+  } else if (o3 <= 0.054) {
+    return(50 * o3 / 0.054)  # Good
+  } else if (o3 <= 0.070) {
+    return(50 + (100 - 50) * (o3 - 0.055) / (0.070 - 0.055))  # Moderate
+  } else if (o3 <= 0.085) {
+    return(100 + (150 - 100) * (o3 - 0.071) / (0.085 - 0.071))  # Unhealthy for Sensitive Groups
+  } else if (o3 <= 0.105) {
+    return(150 + (200 - 150) * (o3 - 0.086) / (0.105 - 0.086))  # Unhealthy
+  } else if (o3 <= 0.200) {
+    return(200 + (300 - 200) * (o3 - 0.106) / (0.200 - 0.106))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+#Calculate the 8-hour rolling average for ozone
+daily_avg$ozone_8hr_avg <- rollmean(daily_avg$ozone_ppm_avg, 8, align = "right", fill = NA)
+
+# Apply the AQI calculation to the dataset
+daily_avg$aqi_sensor1_pm25 <- sapply(daily_avg$sensor1_pm2.5_ugm3_avg, calculate_aqi_pm25)
+daily_avg$aqi_sensor2_pm25 <- sapply(daily_avg$sensor2_pm2.5_ugm3_avg, calculate_aqi_pm25)
+daily_avg$aqi_sensor1_pm10 <- sapply(daily_avg$sensor1_pm10_ugm3_avg, calculate_aqi_pm10)
+daily_avg$aqi_sensor2_pm10 <- sapply(daily_avg$sensor2_pm10_ugm3_avg, calculate_aqi_pm10)
+daily_avg$aqi_o3 <- sapply(daily_avg$ozone_8hr_avg, calculate_aqi_o3)
+
+# Define the corrected color palette
+aqi_colors <- c(
+  "Good" = "#66c2a5",  # Green
+  "Moderate" = "#ffd972",  # Yellow
+  "Unhealthy for Sensitive Groups" = "#fc8d62",  # Orange
+  "Unhealthy" = "#d90429",  # Red
+  "Very Unhealthy" = "#a01a7d"  # Purple
+)
+
+# Convert the category column to a factor with the desired order
+aqi_categories <- data.frame(
+  category = c("Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy"),
+  ymin = c(0, 50, 100, 150, 200),  # Corresponding lower bounds
+  ymax = c(50, 100, 150, 200, 300)  # Corresponding upper bounds
+)
+
+
+# Create the plot
+pm_aqi_plot <- ggplot() +
+  # Add shaded regions for AQI categories
+  geom_rect(data = aqi_categories, aes(xmin = min(daily_avg$timestamp_day), xmax = max(daily_avg$timestamp_day), ymin = ymin, ymax = ymax, fill = category), alpha = 0.5) +
+  # Add line plots for AQI with refined colors
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor1_pm25, color = "PM2.5 Sensor 1 AQI"), size = 1.2) +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor2_pm25, color = "PM2.5 Sensor 2 AQI"), size = 1.2, linetype = "dotted") +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor1_pm10, color = "PM10 Sensor 1 AQI"), size = 1.2) +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor2_pm10, color = "PM10 Sensor 2 AQI"), size = 1.2, linetype = "dotted") +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_o3, color = "Ozone 8-hour AQI"), size = 1.2) +
+  
+  # Define colors for AQI categories and sensor lines
+  scale_fill_manual(
+    name = "AQI Categories",
+    values = aqi_colors
+  ) +
+  scale_color_manual(values = c(
+    "PM2.5 Sensor 1 AQI" = viridis(6)[1], 
+    "PM2.5 Sensor 2 AQI" = viridis(6)[2], 
+    "PM10 Sensor 1 AQI" = viridis(6)[3], 
+    "PM10 Sensor 2 AQI" = viridis(6)[4],
+    "Ozone 8-hour AQI" = viridis(6)[5]
+  )) +
+  
+  # Enhance labeling and title presentation
+  labs(x = "Timestamp", 
+       y = "AQI", 
+       color = "Sensors") +
+  
+  # Minimal theme with slight adjustments
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 20, face = "bold"),
+    plot.subtitle = element_text(size = 16),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    panel.grid.minor = element_blank()  # Remove minor gridlines for clarity
+  ) +
+  guides(
+    fill = guide_legend(override.aes = list(alpha = 0.5))  # Ensure transparency is shown in the legend
+  )
+
+# Display the plot
+print(pm_aqi_plot)
+
+#How to interpret: highest AQI of the three pollutants would be the index for the day/hour.
+
+```
 Next:
   - make a census tract map with aqi 
   - Color codes (green to red): 0-7 (green), 7-8, 89, 9-10, 10-11, 11-12, 12-30 (red) with PM2.5 level
