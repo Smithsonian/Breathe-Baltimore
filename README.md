@@ -40,7 +40,7 @@ Educating the public on air quality issues
 TBD!
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/7f13b759-7b01-4b12-8274-db9823169a40" alt="logo-image-incinerator-photo-taken-by-veronica-lucchese-ejji-staff-cropped">
+  <img src="images/logo-image-incinerator-photo-taken-by-veronica-lucchese-ejji-staff-cropped.png">
 </p>
 
 
