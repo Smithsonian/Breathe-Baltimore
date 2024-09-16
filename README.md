@@ -15,9 +15,9 @@ Additionally, site stewards and volunteers from the community play an essential 
 
 The sensors deployed in this project measure the following air pollutants:
 
-Particulate Pollution
-Ozone
-Carbon Dioxide (CO₂)
+• Particulate Pollution
+• Ozone
+• Carbon Dioxide (CO₂)
 These pollutants have significant impacts on human health and environmental conditions. To learn more about each pollutant and their effects, [visit the project website](https://www.ejji.org/air-quality-monitoring-in-baltimore).
 
 **Data Collection Frequency**
@@ -29,20 +29,15 @@ The sensors collect data every 5 minutes, offering near real-time insight into t
 
 While the data is not legally defensible or regulatory, it can still serve numerous valuable purposes, including:
 
+• Identifying air quality hotspots
 
-Identifying air quality hotspots
+• Informing future data collection priorities
 
+• Revealing patterns and trends in outdoor air quality across neighborhoods
 
-Informing future data collection priorities
+• Supporting community stories and real-life experiences
 
-
-Revealing patterns and trends in outdoor air quality across neighborhoods
-
-
-Supporting community stories and real-life experiences
-
-
-Educating the public on air quality issues
+• Educating the public on air quality issues
 
 **Reporting Area**
 
