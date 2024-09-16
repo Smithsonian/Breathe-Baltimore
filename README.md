@@ -29,10 +29,19 @@ The sensors collect data every 5 minutes, offering near real-time insight into t
 
 While the data is not legally defensible or regulatory, it can still serve numerous valuable purposes, including:
 
+
 Identifying air quality hotspots
+
+
 Informing future data collection priorities
+
+
 Revealing patterns and trends in outdoor air quality across neighborhoods
+
+
 Supporting community stories and real-life experiences
+
+
 Educating the public on air quality issues
 
 **Reporting Area**
