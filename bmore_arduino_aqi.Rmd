@@ -35,7 +35,7 @@ aqi_test <- fread("~/Dropbox/Bmore_AQI/Data/AQLSP_SERC_2024.csv")
 # Rename columns to make them more readable
 setnames(aqi_test, c("timestamp", "arduino_id", "program", "bme_temp_c", "bme_pressure_hpa", 
                      "bme_humidity_percent", "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", 
-                     "ozone_ppm", "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3", 
+                     "ozone_ppb", "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3", 
                      "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
 
 # Step 2: Add New Columns with Default Values
@@ -53,9 +53,10 @@ setcolorder(aqi_test, c("timestamp", "long", "lat", "neighborhood",
                         "vulnerability_score", "vulnerability_level", 
                         "land_use_code", "arduino_id", "program", 
                         "bme_temp_c", "bme_pressure_hpa", "bme_humidity_percent", 
-                        "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", "ozone_ppm", 
+                        "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", "ozone_ppb", 
                         "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3",
                         "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
+
 
 # Step 3: Data Cleaning - Replace invalid values (-7999) with NA
 aqi_test[aqi_test == -7999] <- NA
@@ -66,6 +67,9 @@ aqi_test[, timestamp := as.POSIXct(timestamp, format = "%Y/%m/%d %I:%M:%S %p")]
 # Step 5: Floor to the nearest hour
 library(lubridate)
 aqi_test[, timestamp_hour := floor_date(timestamp, unit = "hour")]
+
+#Ozone comes in ppb-- converting now to ppm
+aqi_test$ozone_ppm <- aqi_test$ozone_ppb /1000
 
 # Step 6: Compute Hourly Averages for PM2.5 and PM10 Data
 hourly_avg <- aqi_test[, .(
@@ -499,7 +503,7 @@ aqi_categories <- data.frame(
 # Create the plot
 pm_aqi_plot <- ggplot() +
   # Add shaded regions for AQI categories
-  geom_rect(data = aqi_categories, aes(xmin = min(daily_avg$timestamp_day), xmax = max(daily_avg$timestamp_day), ymin = ymin, ymax = ymax, fill = category), alpha = 0.5) +
+  geom_rect(data = aqi_categories, aes(xmin = min(daily_avg$timestamp_day), xmax = max(daily_avg$timestamp_day), ymin = ymin, ymax = ymax, fill = category), alpha = 0.55) +
   # Add line plots for AQI with refined colors
   geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor1_pm25, color = "PM2.5 Sensor 1 AQI"), size = 1.2) +
   geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor2_pm25, color = "PM2.5 Sensor 2 AQI"), size = 1.2, linetype = "dotted") +
@@ -513,12 +517,14 @@ pm_aqi_plot <- ggplot() +
     values = aqi_colors
   ) +
   scale_color_manual(values = c(
-    "PM2.5 Sensor 1 AQI" = viridis(6)[1], 
-    "PM2.5 Sensor 2 AQI" = viridis(6)[2], 
-    "PM10 Sensor 1 AQI" = viridis(6)[3], 
-    "PM10 Sensor 2 AQI" = viridis(6)[4],
-    "Ozone 8-hour AQI" = viridis(6)[5]
-  )) +
+  #"PM2.5 Sensor 1 AQI" = viridis(6)[1], 
+  "PM2.5 Sensor 1 AQI" = "#4F2C8C",
+  "PM2.5 Sensor 2 AQI" = viridis(6)[2], 
+  "PM10 Sensor 1 AQI" = "#00B8B5",
+  #"PM10 Sensor 1 AQI" = viridis(6)[3], 
+  "PM10 Sensor 2 AQI" = "#00B8B5",
+  "Ozone 8-hour AQI" = "#4AE114"  # A44200
+    )) +
   
   # Enhance labeling and title presentation
   labs(x = "Timestamp", 
@@ -536,18 +542,17 @@ pm_aqi_plot <- ggplot() +
     panel.grid.minor = element_blank()  # Remove minor gridlines for clarity
   ) +
   guides(
-    fill = guide_legend(override.aes = list(alpha = 0.5))  # Ensure transparency is shown in the legend
+    fill = guide_legend(override.aes = list(alpha = 0.55))  # Ensure transparency is shown in the legend
   )
 
 # Display the plot
 print(pm_aqi_plot)
 
-#How to interpret: highest AQI of the three pollutants would be the index for the day/hour.
+ #How to interpret: highest AQI of the three pollutants would be the index for the day/hour.
 
 ```
 Next:
   - make a census tract map with aqi 
-  - Color codes (green to red): 0-7 (green), 7-8, 89, 9-10, 10-11, 11-12, 12-30 (red) with PM2.5 level
   - when neighborhoods come in, do autocorrelation analysis + code
   - when all data comes in across all neighborhoods, do spatial econ regression
 
