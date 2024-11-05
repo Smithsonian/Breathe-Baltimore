@@ -34,7 +34,7 @@ These pollutants have significant impacts on human health and environmental cond
 
 **Data Collection Frequency**
 
-The sensors collect data every 5 minutes, offering near real-time insight into the air quality of the surrounding area.
+The sensors collect data every minute, offering real-time insight into the air quality of the surrounding area.
 
 <br>
 
