@@ -1,0 +1,370 @@
+---
+title: "bmore_arduino_clean"
+author: "Leona Neftaliem"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, error = FALSE)
+```
+
+#Libraries
+```{r}
+library(dplyr)
+library(lubridate)
+library(tidyverse)
+library(dplyr)
+library(zoo)
+library(data.table)
+library(ggmap)
+library(ggplot2)
+library(viridis)
+library(ggiraph)
+library(ggplotlyExtra)
+library(htmlwidgets)
+library(plotly)
+library(ggiraph)
+```
+
+#Functions
+```{r}
+# Function to calculate AQI from PM2.5
+calculate_aqi_pm25 <- function(pm25) {
+  if (pm25 <= 9.0) {
+    return(50 * pm25 / 9)  # Good
+  } else if (pm25 <= 35.4) {
+    return(50 + (100 - 50) * (pm25 - 9.1) / (35.4 - 9.1))  # Moderate
+  } else if (pm25 <= 55.4) {
+    return(100 + (150 - 100) * (pm25 - 35.5) / (55.4 - 35.5))  # Unhealthy for Sensitive Groups
+  } else if (pm25 <= 125.4) {
+    return(150 + (200 - 150) * ((pm25 - 55.5)^3) / ((125.4 - 55.5)^3))  # Unhealthy
+  } else if (pm25 <= 225.4) {
+    return(200 + (300 - 200) * ((pm25 - 125.5)^3) / ((225.4 - 125.5)^3))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+# Function to calculate AQI from PM10
+calculate_aqi_pm10 <- function(pm10) {
+  if (pm10 <= 54) {
+    return(50 * pm10 / 54)  # Good
+  } else if (pm10 <= 154) {
+    return(50 + (100 - 50) * (pm10 - 55) / (154 - 55))  # Moderate
+  } else if (pm10 <= 254) {
+    return(100 + (150 - 100) * (pm10 - 155) / (254 - 155))  # Unhealthy for Sensitive Groups
+  } else if (pm10 <= 354) {
+    return(150 + (200 - 150) * (pm10 - 255) / (354 - 255))  # Unhealthy
+  } else if (pm10 <= 424) {
+    return(200 + (300 - 200) * (pm10 - 355) / (424 - 355))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+
+# Function to calculate AQI from Ozone 
+calculate_aqi_o3 <- function(o3) {
+  if (is.na(o3)) {
+    return(NA)  # Return NA if o3 is NA
+  } else if (o3 <= 0.054) {
+    return(50 * o3 / 0.054)  # Good
+  } else if (o3 <= 0.070) {
+    return(50 + (100 - 50) * (o3 - 0.055) / (0.070 - 0.055))  # Moderate
+  } else if (o3 <= 0.085) {
+    return(100 + (150 - 100) * (o3 - 0.071) / (0.085 - 0.071))  # Unhealthy for Sensitive Groups
+  } else if (o3 <= 0.105) {
+    return(150 + (200 - 150) * (o3 - 0.086) / (0.105 - 0.086))  # Unhealthy
+  } else if (o3 <= 0.200) {
+    return(200 + (300 - 200) * (o3 - 0.106) / (0.200 - 0.106))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+```
+
+#AQI
+```{r}
+# Define the corrected color palette
+aqi_colors <- c(
+  "Good" = "#66c2a5",  # Green
+  "Moderate" = "#ffd972",  # Yellow
+  "Unhealthy for Sensitive Groups" = "#fc8d62",  # Orange
+  "Unhealthy" = "#d90429",  # Red
+  "Very Unhealthy" = "#a01a7d",#Purple
+  "Hazardous" = "#640d14"# Maroon
+)
+
+# Convert the category column to a factor with the desired order
+aqi_categories <- data.frame(
+  category = c("Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy", "Hazardous"),
+  ymin = c(0, 50, 100, 150, 200, 300),  # Corresponding lower bounds
+  ymax = c(50, 100, 150, 200, 300, Inf)  # Corresponding upper bounds
+)
+
+aqi_categories <- aqi_categories %>%
+  mutate(category = factor(category, levels = names(aqi_colors)))
+
+```
+
+#Clean
+```{r}
+# Set the directory where your files are located
+data_dir <- "~/Dropbox/Bmore_AQI/Data/sensor_data"
+
+# Get a list of all files in the directory that start with 
+file_list <- list.files(path = data_dir, pattern = "^Tool", full.names = TRUE)
+
+# Read all files and combine them into one data table
+aqi_data <- rbindlist(lapply(file_list, fread))
+
+# Rename columns to make them more readable
+setnames(aqi_data, c("timestamp", "arduino_id", "program", "bme_temp_c", "bme_pressure_hpa", 
+                     "bme_humidity_percent", "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", 
+                     "ozone_ppb", "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3", 
+                     "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
+
+# Reorder the columns for better organization
+setcolorder(aqi_data, c("timestamp", "arduino_id", "program", 
+                        "bme_temp_c", "bme_pressure_hpa", "bme_humidity_percent", 
+                        "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", "ozone_ppb", 
+                        "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3",
+                        "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
+
+#Replace invalid values (-7999) with NA
+aqi_data[aqi_data == -7999] <- NA
+
+
+#Convert Timestamps to Standard Format
+convert_timestamp <- function(ts) {
+  ts_parsed <- ymd_hms(ts, tz = "UTC")
+  if (is.na(ts_parsed)) {
+    ts_parsed <- mdy_hm(ts, tz = "UTC")
+  }
+  return(ts_parsed)
+}
+
+# Ensure timestamp column is character before conversion
+aqi_data[, timestamp := as.character(timestamp)]
+
+# Apply the conversion function
+aqi_data[, timestamp := sapply(timestamp, convert_timestamp)]
+
+aqi_data <- aqi_data[!is.na(timestamp)]
+
+# Ensure timestamp is in POSIXct format
+aqi_data[, timestamp := as.POSIXct(timestamp)]
+
+aqi_data <- aqi_data[!duplicated(aqi_data$timestamp), ]
+
+# Round to the nearest hour
+aqi_data[, timestamp_hour := floor_date(timestamp, unit = "hour")]
+
+# Check the cleaned data
+head(aqi_data)
+aqi_data$ozone_ppb[is.nan(aqi_data$ozone_ppb)]<-NA
+
+#Ozone comes in ppb-- converting now to ppm
+aqi_data$ozone_ppm <- aqi_data$ozone_ppb /1000
+```
+
+#Hourly
+```{r}
+#Compute hourly averages
+hourly_avg <- aqi_data[, .(
+  sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
+  sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
+  sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
+  sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
+  bme_humidity_percent_avg  = mean(bme_humidity_percent, na.rm = TRUE),
+  ozone_ppm_avg  = mean(ozone_ppm, na.rm = TRUE),
+  k30_co2_ppm_avg  = mean(k30_co2_ppm, na.rm = TRUE)
+), by = timestamp_hour]
+
+# Convert timestamp to daily timestamps
+aqi_data[, timestamp_day := floor_date(timestamp, unit = "day")]
+```
+
+#Daily
+```{r}
+# Compute daily averages
+daily_avg <- aqi_data[, .(
+  sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
+  sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
+  sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
+  sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
+  bme_humidity_percent_avg  = mean(bme_humidity_percent, na.rm = TRUE),
+  ozone_ppm_avg  = mean(ozone_ppm, na.rm = TRUE),
+  k30_co2_ppm_avg  = mean(k30_co2_ppm, na.rm = TRUE)
+), by = timestamp_day]
+
+hourly_avg$ozone_ppm_avg[is.nan(hourly_avg$ozone_ppm_avg)]<-NA
+daily_avg$ozone_ppm_avg[is.nan(daily_avg$ozone_ppm_avg)]<-NA
+```
+
+#Check data
+```{r}
+# Apply the AQI calculation to the dataset
+daily_avg$aqi_sensor1_pm25 <- sapply(daily_avg$sensor1_pm2.5_ugm3_avg, calculate_aqi_pm25)
+daily_avg$aqi_sensor2_pm25 <- sapply(daily_avg$sensor2_pm2.5_ugm3_avg, calculate_aqi_pm25)
+daily_avg$aqi_sensor1_pm10 <- sapply(daily_avg$sensor1_pm10_ugm3_avg, calculate_aqi_pm10)
+daily_avg$aqi_sensor2_pm10 <- sapply(daily_avg$sensor2_pm10_ugm3_avg, calculate_aqi_pm10)
+
+#Graphs
+
+pm25_aqi_plot  <- ggplot() +
+  # Add shaded regions for AQI categories
+  geom_rect(data = aqi_categories, aes(xmin = min(daily_avg$timestamp_day), xmax = max(daily_avg$timestamp_day), ymin = ymin, ymax = ymax, fill = category), alpha = 0.55) +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor1_pm25, color = "PM2.5 Sensor 1"), size = 1.2) +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor2_pm25, color = "PM2.5 Sensor 2"), size = 1.2, linetype = "dotted") +
+  #geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_o3, color = "Ozone 8-hour AQI"), size = 1.2) +
+  
+  # Define colors for AQI categories and sensor lines
+  scale_fill_manual(
+    name = "AQI Categories",
+    values = aqi_colors
+  ) +
+    labs(x = "Timestamp", 
+       y = "AQI", 
+       color = "Sensor") +
+  scale_color_manual(values = c(
+  "PM2.5 Sensor 1" = "black",
+  #"PM10 Sensor 1 AQI" = viridis(6)[3], 
+  "PM2.5 Sensor 2" = "black"
+  #"Ozone 8-hour AQI" = "#4AE114"  # A44200
+    )) +
+  
+  # Minimal theme with slight adjustments
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 20, face = "bold"),
+    plot.subtitle = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12, face = "bold"),  # Bold legend text
+    legend.title = element_text(size = 14, face = "bold"), # Bold legend title
+    panel.grid.minor = element_blank()  # Remove minor gridlines for clarity
+  ) +
+  guides(
+    fill = guide_legend(override.aes = list(alpha = 0.55))  # Ensure transparency is shown in the legend
+  )
+
+# Display the plot
+print(pm25_aqi_plot)
+
+
+#PM10
+
+# Create the plot
+pm10_aqi_plot <- ggplot() +
+  # Add shaded regions for AQI categories
+  geom_rect(data = aqi_categories, aes(xmin = min(daily_avg$timestamp_day), xmax = max(daily_avg$timestamp_day), ymin = ymin, ymax = ymax, fill = category), alpha = 0.55) +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor1_pm10, color = "PM10 Sensor 1"), size = 1.2) +
+  geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_sensor2_pm10, color = "PM10 Sensor 2"), size = 1.2, linetype = "dotted") +
+  #geom_line(data = daily_avg, aes(x = timestamp_day, y = aqi_o3, color = "Ozone 8-hour AQI"), size = 1.2) +
+  
+  # Define colors for AQI categories and sensor lines
+  scale_fill_manual(
+    name = "AQI Categories",
+    values = aqi_colors
+  ) +
+    labs(x = "Timestamp", 
+       y = "AQI", 
+       color = "Sensor") +
+  
+  scale_color_manual(values = c(
+  "PM10 Sensor 1" = "black",
+  "PM10 Sensor 2" = "black"
+    )) +
+  
+  # Minimal theme with slight adjustments
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 20, face = "bold"),
+    plot.subtitle = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12, face = "bold"),  # Bold legend text
+    legend.title = element_text(size = 14, face = "bold"), # Bold legend title
+    panel.grid.minor = element_blank()  # Remove minor gridlines for clarity
+  ) +
+  guides(
+    fill = guide_legend(override.aes = list(alpha = 0.55))  # Ensure transparency is shown in the legend
+  )
+
+# Display the plot
+print(pm10_aqi_plot)
+
+#--------------
+# Calculate the 8-hour rolling average for ozone based on hourly data
+hourly_avg$ozone_8hr_avg <- rollmean(hourly_avg$ozone_ppm_avg, 8, align = "right", fill = NA)
+
+#8-hour ozone
+hourly_avg$aqi_o3 <- sapply(hourly_avg$ozone_8hr_avg, calculate_aqi_o3)
+
+# Create the plot
+pm_o3_plot <- ggplot() +
+  # Add shaded regions for AQI categories
+  geom_rect(data = aqi_categories, aes(xmin = min(hourly_avg$timestamp_hour), xmax = max(hourly_avg$timestamp_hour), ymin = ymin, ymax = ymax, fill = category), alpha = 0.55) +
+  # Add line plots for AQI with refined colors
+  geom_line(data = hourly_avg, aes(x = timestamp_hour, y = aqi_o3, color = "Ozone"), size = 1.2) +
+  
+  # Define colors for AQI categories and sensor lines
+  scale_fill_manual(
+    name = "AQI Categories",
+    values = aqi_colors
+  ) +
+  scale_color_manual(values = c(
+  "Ozone" = "black"  # A44200
+    )) +
+  
+  # Enhance labeling and title presentation
+  labs(x = "Timestamp", 
+       y = "AQI", 
+       color = "Sensor") +
+  
+  # Minimal theme with slight adjustments
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(size = 20, face = "bold"),
+    plot.subtitle = element_text(size = 16, face = "bold"),
+    axis.title = element_text(size = 14, face = "bold"),
+    axis.text = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 12, face = "bold"),  # Bold legend text
+    legend.title = element_text(size = 14, face = "bold"), # Bold legend title
+    panel.grid.minor = element_blank()  # Remove minor gridlines for clarity
+  ) +
+  guides(
+    fill = guide_legend(override.aes = list(alpha = 0.55))  # Ensure transparency is shown in the legend
+  )
+
+pm_o3_plot
+
+```
+
+
+
+#Save new file
+```{r}
+# Define the original file name (for example)
+original_file <- "BayBrook-11152024 - Rachael Mady.TXT"
+
+# Create the new file name by adding "_cleaned" before the .csv extension
+cleaned_file <- sub("\\.TXT$", "_cleaned.csv", original_file)
+
+# Specify the full path for the cleaned file
+output_path <- file.path("~/Dropbox/Bmore_AQI/Data/sensor_data/Cleaned", cleaned_file)
+
+# Write the 'hourly_avg' dataframe to the new file in the specified directory
+write.csv(hourly_avg, output_path, row.names = FALSE)
+
+```
+
+
