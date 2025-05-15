@@ -481,10 +481,13 @@ setcolorder(merged_data, c("timestamp", "site", "longitude", "latitude",
 ```{r}
 # Compute hourly averages grouped by site and timestamp_hour
 hourly_avg <- merged_data[, .(
+  sensor1_pm1_ugm3_avg = mean(sensor1_pm1_ugm3, na.rm = TRUE),
+  sensor2_pm1_ugm3_avg = mean(sensor2_pm1_ugm3, na.rm = TRUE),
   sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
   sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
   sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
   sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  pm1_ugm3_avg = mean(c(sensor1_pm1_ugm3, sensor2_pm1_ugm3), na.rm = TRUE),
   pm2.5_ugm3_avg = mean(c(sensor1_pm2.5_ugm3, sensor2_pm2.5_ugm3), na.rm = TRUE),
   pm10_ugm3_avg = mean(c(sensor1_pm10_ugm3, sensor2_pm10_ugm3), na.rm = TRUE),
   bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
@@ -502,6 +505,8 @@ hourly_avg <- merge(hourly_avg,
 # Reorder columns in hourly_avg
 setcolorder(hourly_avg, c("timestamp_hour", "site", "longitude", "latitude",
                         "social_vuln_score", "social_vuln_category",
+                        "sensor1_pm1_ugm3_avg", "sensor2_pm1_ugm3_avg", 
+                        "pm1_ugm3_avg",
                         "sensor1_pm2.5_ugm3_avg", "sensor2_pm2.5_ugm3_avg", 
                         "pm2.5_ugm3_avg",
                         "sensor1_pm10_ugm3_avg", "sensor2_pm10_ugm3_avg",
@@ -520,10 +525,13 @@ merged_data[, timestamp_day := floor_date(timestamp, unit = "day")]
 
 # Compute daily averages
 daily_avg <- merged_data[, .(
+  sensor1_pm1_ugm3_avg = mean(sensor1_pm1_ugm3, na.rm = TRUE),
+  sensor2_pm1_ugm3_avg = mean(sensor2_pm1_ugm3, na.rm = TRUE),
   sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
   sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
   sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
   sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  pm1_ugm3_avg = mean(c(sensor1_pm1_ugm3, sensor2_pm1_ugm3), na.rm = TRUE),
   pm2.5_ugm3_avg = mean(c(sensor1_pm2.5_ugm3, sensor2_pm2.5_ugm3), na.rm = TRUE),
   pm10_ugm3_avg = mean(c(sensor1_pm10_ugm3, sensor2_pm10_ugm3), na.rm = TRUE),
   bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
@@ -547,6 +555,8 @@ daily_avg <- merge(daily_avg,
 # Reorder columns in daily_avg
 setcolorder(daily_avg, c("timestamp_day", "site", "longitude", "latitude",
                         "social_vuln_score", "social_vuln_category",
+                        "sensor1_pm1_ugm3_avg", "sensor2_pm1_ugm3_avg", 
+                        "pm1_ugm3_avg",
                         "sensor1_pm2.5_ugm3_avg", "sensor2_pm2.5_ugm3_avg", 
                         "pm2.5_ugm3_avg",
                         "sensor1_pm10_ugm3_avg", "sensor2_pm10_ugm3_avg",
