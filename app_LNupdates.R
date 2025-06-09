@@ -24,6 +24,7 @@ library(spdep)  # For spatial analysis
 library(spatialreg)  # For spatial regression
 library(data.table)
 library(lubridate)
+library(forecast)
 
 # Memory management function
 gc()  # Force garbage collection at startup
