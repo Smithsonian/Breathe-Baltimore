@@ -1,0 +1,1053 @@
+---
+title: "sensor_health_checks"
+author: "Leona Neftaliem"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, error = FALSE)
+```
+
+#Libraries
+```{r}
+library(dplyr)
+library(lubridate)
+library(tidyverse)
+library(dplyr)
+library(zoo)
+library(data.table)
+library(ggmap)
+library(ggplot2)
+library(viridis)
+library(ggiraph)
+library(ggplotlyExtra)
+library(htmlwidgets)
+library(plotly)
+library(ggiraph)
+library(tidycensus)
+library(sf)
+library(tigris)
+library(tmap)
+library(tmaptools)
+library(spdep)
+library(spatialreg)
+library(sp)
+```
+
+#Functions
+```{r}
+# Function to calculate AQI from PM2.5
+calculate_aqi_pm25 <- function(pm25) {
+  if (is.na(pm25)) return(NA)
+  if (pm25 <= 9.0) {
+    return(50 * pm25 / 9.0)  # Good
+  } else if (pm25 <= 35.4) {
+    return(50 + (100 - 50) * (pm25 - 9.1) / (35.4 - 9.1))  # Moderate
+  } else if (pm25 <= 55.4) {
+    return(100 + (150 - 100) * (pm25 - 35.5) / (55.4 - 35.5))  # Unhealthy for Sensitive Groups
+  } else if (pm25 <= 125.4) {
+    return(150 + (200 - 150) * (pm25 - 55.5) / (125.4 - 55.5))  # Unhealthy
+  } else if (pm25 <= 225.4) {
+    return(200 + (300 - 200) * (pm25 - 125.5) / (225.4 - 125.5))  # Very Unhealthy
+  } else if (pm25 <= 500.4) {
+    return(300 + (500 - 300) * (pm25 - 225.5) / (500.4 - 225.5))  # Hazardous
+  } else {
+    return(NA)  # Above AQI range
+  }
+}
+
+# Function to calculate AQI from PM10
+calculate_aqi_pm10 <- function(pm10) {
+  # Return NA if the input is NA or NaN
+  if (is.na(pm10) || is.nan(pm10)) {
+    return(NA)
+  }
+  if (pm10 <= 54) {
+    return(50 * pm10 / 54)  # Good
+  } else if (pm10 <= 154) {
+    return(50 + (100 - 50) * (pm10 - 55) / (154 - 55))  # Moderate
+  } else if (pm10 <= 254) {
+    return(100 + (150 - 100) * (pm10 - 155) / (254 - 155))  # Unhealthy for Sensitive Groups
+  } else if (pm10 <= 354) {
+    return(150 + (200 - 150) * (pm10 - 255) / (354 - 255))  # Unhealthy
+  } else if (pm10 <= 424) {
+    return(200 + (300 - 200) * (pm10 - 355) / (424 - 355))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+
+# Function to calculate AQI from Ozone 
+calculate_aqi_o3 <- function(o3) {
+  if (is.na(o3)) {
+    return(NA)  # Return NA if o3 is NA
+  } else if (o3 <= 0.054) {
+    return(50 * o3 / 0.054)  # Good
+  } else if (o3 <= 0.070) {
+    return(50 + (100 - 50) * (o3 - 0.055) / (0.070 - 0.055))  # Moderate
+  } else if (o3 <= 0.085) {
+    return(100 + (150 - 100) * (o3 - 0.071) / (0.085 - 0.071))  # Unhealthy for Sensitive Groups
+  } else if (o3 <= 0.105) {
+    return(150 + (200 - 150) * (o3 - 0.086) / (0.105 - 0.086))  # Unhealthy
+  } else if (o3 <= 0.200) {
+    return(200 + (300 - 200) * (o3 - 0.106) / (0.200 - 0.106))  # Very Unhealthy
+  } else {
+    return(301)  # Hazardous
+  }
+}
+
+# Sensor Health Detection Functions
+detect_sensor_health <- function(data, site_col = "site", time_col = "timestamp", 
+                                window_hours = 24, min_consecutive_readings = 6) {
+  
+  #Detect sensor health issues based on multiple criteria:
+  #1. Stuck values (same value for extended periods)
+  #2. Constant values (no variation)
+  #3. Out of range values
+  #4. Missing data patterns
+  #5. Unrealistic jumps in values
+  
+  #Returns a data frame with sensor health status for each sensor type
+
+  
+  # Define sensor-specific thresholds
+  sensor_thresholds <- list(
+    pm25 = list(min = 0, max = 1000, stuck_threshold = 0.1, jump_threshold = 50), #μg/m³
+    pm10 = list(min = 0, max = 2000, stuck_threshold = 0.5, jump_threshold = 100), #μg/m³
+    ozone = list(min = 0, max = 1, stuck_threshold = 0.001, jump_threshold = 0.1), #ppm
+    co2 = list(min = 300, max = 5000, stuck_threshold = 1, jump_threshold = 500) #ppm
+  )
+  
+  # Initialize results
+  results <- data.frame()
+  
+  # Process each site separately
+  for (site_name in unique(data[[site_col]])) {
+    site_data <- data[data[[site_col]] == site_name, ]
+    site_data <- site_data[order(site_data[[time_col]]), ]
+    
+    # Check each sensor type
+    for (sensor_type in names(sensor_thresholds)) {
+      # Get sensor columns for this type
+      sensor_cols <- grep(paste0(sensor_type, ".*ugm3|", sensor_type, ".*ppm|", sensor_type, ".*ppb"), 
+                         names(site_data), value = TRUE, ignore.case = TRUE)
+      
+      if (length(sensor_cols) == 0) next
+      
+      for (col in sensor_cols) {
+        values <- site_data[[col]]
+        thresholds <- sensor_thresholds[[sensor_type]]
+        
+        # Initialize health status
+        health_status <- "Good"
+        issues <- c()
+        
+        # 1. Check for stuck values (same value for extended periods)
+        if (length(values) >= min_consecutive_readings) {
+          # Remove NA values for stuck detection
+          clean_values <- values[!is.na(values)]
+          if (length(clean_values) >= min_consecutive_readings) {
+            # Check for consecutive identical values
+            consecutive_stuck <- rle(diff(clean_values))
+            # Handle case where there are no consecutive identical values
+            identical_lengths <- consecutive_stuck$lengths[consecutive_stuck$values == 0]
+            if (length(identical_lengths) > 0) {
+              max_consecutive <- max(identical_lengths)
+            } else {
+              max_consecutive <- 0
+            }
+            
+            if (!is.na(max_consecutive) && max_consecutive >= min_consecutive_readings) {
+              health_status <- "Stuck"
+              issues <- c(issues, paste("Stuck for", max_consecutive, "consecutive readings"))
+            }
+          }
+        }
+        
+        # 2. Check for constant values (very low variance)
+        if (length(values) > 1) {
+          # Remove NA values for variance calculation
+          clean_values <- values[!is.na(values)]
+          if (length(clean_values) > 1) {
+            variance <- var(clean_values)
+            if (!is.na(variance) && variance < thresholds$stuck_threshold) {
+              health_status <- "Low Variance"
+              issues <- c(issues, paste("Variance =", round(variance, 4)))
+            }
+          }
+        }
+        
+        # 3. Check for out of range values
+        clean_values <- values[!is.na(values)]
+        if (length(clean_values) > 0) {
+          out_of_range <- sum(clean_values < thresholds$min | clean_values > thresholds$max)
+          if (out_of_range > 0) {
+            health_status <- "Out of Range"
+            issues <- c(issues, paste(out_of_range, "values out of range"))
+          }
+        }
+        
+        # 4. Check for unrealistic jumps
+        if (length(values) > 1) {
+          # Remove NA values for jump calculation
+          clean_values <- values[!is.na(values)]
+          if (length(clean_values) > 1) {
+            jumps <- abs(diff(clean_values))
+            large_jumps <- sum(jumps > thresholds$jump_threshold)
+            if (large_jumps > 0) {
+              health_status <- "Large Jumps"
+              issues <- c(issues, paste(large_jumps, "large jumps detected"))
+            }
+          }
+        }
+        
+        # 5. Check for missing data patterns
+        missing_pct <- sum(is.na(values)) / length(values)
+        if (missing_pct > 0.5) {
+          health_status <- "High Missing Data"
+          issues <- c(issues, paste(round(missing_pct * 100, 1), "% missing data"))
+        }
+        
+        # Add to results
+        clean_values <- values[!is.na(values)]
+        result_row <- data.frame(
+          site = site_name,
+          sensor = col,
+          sensor_type = sensor_type,
+          health_status = health_status,
+          issues = paste(issues, collapse = "; "),
+          total_readings = length(values),
+          missing_readings = sum(is.na(values)),
+          min_value = ifelse(length(clean_values) > 0, min(clean_values), NA),
+          max_value = ifelse(length(clean_values) > 0, max(clean_values), NA),
+          mean_value = ifelse(length(clean_values) > 0, mean(clean_values), NA),
+          variance = ifelse(length(clean_values) > 1, var(clean_values), NA),
+          last_reading = ifelse(length(clean_values) > 0, tail(clean_values, 1), NA),
+          last_reading_time = tail(site_data[[time_col]], 1)
+        )
+        
+        results <- rbind(results, result_row)
+      }
+    }
+  }
+  
+  return(results)
+}
+
+# Function to add sensor health columns to data
+add_sensor_health_columns <- function(data, site_col = "site", time_col = "timestamp") {
+  
+  # Create health status columns for each sensor type (default to "Good")
+  data$pm25_sensor1_health <- "Good"
+  data$pm25_sensor2_health <- "Good"
+  data$pm10_sensor1_health <- "Good"
+  data$pm10_sensor2_health <- "Good"
+  data$ozone_health <- "Good"
+  data$co2_health <- "Good"
+  
+  # Get sensor health assessment with error handling
+  tryCatch({
+    health_data <- detect_sensor_health(data, site_col, time_col)
+    
+    # Update health status based on assessment (only if health_data is not empty)
+    if (nrow(health_data) > 0) {
+      for (i in 1:nrow(health_data)) {
+        row <- health_data[i, ]
+        sensor_name <- row$sensor
+        
+        # Map sensor names to health columns
+        if (grepl("sensor1.*pm2\\.5", sensor_name, ignore.case = TRUE)) {
+          data$pm25_sensor1_health[data[[site_col]] == row$site] <- row$health_status
+        } else if (grepl("sensor2.*pm2\\.5", sensor_name, ignore.case = TRUE)) {
+          data$pm25_sensor2_health[data[[site_col]] == row$site] <- row$health_status
+        } else if (grepl("sensor1.*pm10", sensor_name, ignore.case = TRUE)) {
+          data$pm10_sensor1_health[data[[site_col]] == row$site] <- row$health_status
+        } else if (grepl("sensor2.*pm10", sensor_name, ignore.case = TRUE)) {
+          data$pm10_sensor2_health[data[[site_col]] == row$site] <- row$health_status
+        } else if (grepl("ozone", sensor_name, ignore.case = TRUE)) {
+          data$ozone_health[data[[site_col]] == row$site] <- row$health_status
+        } else if (grepl("co2|k30", sensor_name, ignore.case = TRUE)) {
+          data$co2_health[data[[site_col]] == row$site] <- row$health_status
+        }
+      }
+    }
+  }, error = function(e) {
+    warning(paste("Error in sensor health detection:", e$message))
+    # If detection fails, keep default "Good" status
+  })
+  
+  return(data)
+}
+
+# Function to create sensor health summary
+create_sensor_health_summary <- function(data, site_col = "site") {
+  
+  health_summary <- data %>%
+    group_by(!!sym(site_col)) %>%
+    summarise(
+      # PM2.5 Sensor 1
+      pm25_sensor1_health = first(pm25_sensor1_health),
+      pm25_sensor1_readings = sum(!is.na(sensor1_pm2.5_ugm3)),
+      
+      # PM2.5 Sensor 2
+      pm25_sensor2_health = first(pm25_sensor2_health),
+      pm25_sensor2_readings = sum(!is.na(sensor2_pm2.5_ugm3)),
+      
+      # PM10 Sensor 1
+      pm10_sensor1_health = first(pm10_sensor1_health),
+      pm10_sensor1_readings = sum(!is.na(sensor1_pm10_ugm3)),
+      
+      # PM10 Sensor 2
+      pm10_sensor2_health = first(pm10_sensor2_health),
+      pm10_sensor2_readings = sum(!is.na(sensor2_pm10_ugm3)),
+      
+      # Ozone
+      ozone_health = first(ozone_health),
+      ozone_readings = sum(!is.na(ozone_ppm)),
+      
+      # CO2
+      co2_health = first(co2_health),
+      co2_readings = sum(!is.na(k30_co2_ppm))
+    )
+  
+  return(health_summary)
+}
+
+# Simple fallback function for basic sensor health detection
+simple_sensor_health_check <- function(data, site_col = "site") {
+  
+  # Create health status columns
+  data$pm25_sensor1_health <- "Good"
+  data$pm25_sensor2_health <- "Good"
+  data$pm10_sensor1_health <- "Good"
+  data$pm10_sensor2_health <- "Good"
+  data$ozone_health <- "Good"
+  data$co2_health <- "Good"
+  
+  # Check each site
+  for (site_name in unique(data[[site_col]])) {
+    site_data <- data[data[[site_col]] == site_name, ]
+    
+    # PM2.5 Sensor 1
+    if ("sensor1_pm2.5_ugm3" %in% names(site_data)) {
+      pm25_vals <- site_data$sensor1_pm2.5_ugm3[!is.na(site_data$sensor1_pm2.5_ugm3)]
+      if (length(pm25_vals) > 0) {
+        if (var(pm25_vals) < 0.1 || length(unique(pm25_vals)) < 3) {
+          data$pm25_sensor1_health[data[[site_col]] == site_name] <- "Low Variance"
+        }
+      }
+    }
+    
+    # PM2.5 Sensor 2
+    if ("sensor2_pm2.5_ugm3" %in% names(site_data)) {
+      pm25_vals <- site_data$sensor2_pm2.5_ugm3[!is.na(site_data$sensor2_pm2.5_ugm3)]
+      if (length(pm25_vals) > 0) {
+        if (var(pm25_vals) < 0.1 || length(unique(pm25_vals)) < 3) {
+          data$pm25_sensor2_health[data[[site_col]] == site_name] <- "Low Variance"
+        }
+      }
+    }
+    
+    # PM10 Sensor 1
+    if ("sensor1_pm10_ugm3" %in% names(site_data)) {
+      pm10_vals <- site_data$sensor1_pm10_ugm3[!is.na(site_data$sensor1_pm10_ugm3)]
+      if (length(pm10_vals) > 0) {
+        if (var(pm10_vals) < 0.5 || length(unique(pm10_vals)) < 3) {
+          data$pm10_sensor1_health[data[[site_col]] == site_name] <- "Low Variance"
+        }
+      }
+    }
+    
+    # PM10 Sensor 2
+    if ("sensor2_pm10_ugm3" %in% names(site_data)) {
+      pm10_vals <- site_data$sensor2_pm10_ugm3[!is.na(site_data$sensor2_pm10_ugm3)]
+      if (length(pm10_vals) > 0) {
+        if (var(pm10_vals) < 0.5 || length(unique(pm10_vals)) < 3) {
+          data$pm10_sensor2_health[data[[site_col]] == site_name] <- "Low Variance"
+        }
+      }
+    }
+    
+    # Ozone
+    if ("ozone_ppm" %in% names(site_data)) {
+      o3_vals <- site_data$ozone_ppm[!is.na(site_data$ozone_ppm)]
+      if (length(o3_vals) > 0) {
+        if (var(o3_vals) < 0.001 || length(unique(o3_vals)) < 3) {
+          data$ozone_health[data[[site_col]] == site_name] <- "Low Variance"
+        }
+      }
+    }
+    
+    # CO2
+    if ("k30_co2_ppm" %in% names(site_data)) {
+      co2_vals <- site_data$k30_co2_ppm[!is.na(site_data$k30_co2_ppm)]
+      if (length(co2_vals) > 0) {
+        if (var(co2_vals) < 1 || length(unique(co2_vals)) < 3) {
+          data$co2_health[data[[site_col]] == site_name] <- "Low Variance"
+        }
+      }
+    }
+  }
+  
+  return(data)
+}
+
+```
+
+#AQI
+```{r}
+# Define the corrected color palette
+aqi_colors <- c(
+  "Good" = "#66c2a5",  # Green
+  "Moderate" = "#ffd972",  # Yellow
+  "Unhealthy for Sensitive Groups" = "#fc8d62",  # Orange
+  "Unhealthy" = "#d90429",  # Red
+  "Very Unhealthy" = "#a01a7d",#Purple
+  "Hazardous" = "#640d14"# Maroon
+)
+
+# Convert the category column to a factor with the desired order
+aqi_categories <- data.frame(
+  category = c("Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy", "Hazardous"),
+  ymin = c(0, 50, 100, 150, 200, 300),  # Corresponding lower bounds
+  ymax = c(50, 100, 150, 200, 300, Inf)  # Corresponding upper bounds
+)
+
+aqi_categories <- aqi_categories %>%
+  mutate(category = factor(category, levels = names(aqi_colors)))
+
+aqi_colors <- c(
+  "Good" = "#66c2a5",  # Green
+  "Moderate" = "#ffd972",  # Yellow
+  "Unhealthy for Sensitive Groups" = "#fc8d62",  # Orange
+  "Unhealthy" = "#d90429",  # Red
+  "Very Unhealthy" = "#a01a7d",#Purple
+  "Hazardous" = "#640d14"# Maroon
+)
+
+# Convert the category column to a factor with the desired order
+aqi_categories <- data.frame(
+  category = c("Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy", "Hazardous"),
+  ymin = c(0, 50, 100, 150, 200, 300),  # Corresponding lower bounds
+  ymax = c(50, 100, 150, 200, 300, Inf)  # Corresponding upper bounds
+)
+
+aqi_categories <- aqi_categories %>%
+  mutate(category = factor(category, levels = names(aqi_colors)))
+
+# Function to classify AQI category based on pollutant value
+classify_aqi <- function(value, pollutant) {
+  # Define the AQI breakpoints for each pollutant
+  aqi_categories <- data.frame(
+    category = c("Good", "Moderate", "Unhealthy for Sensitive Groups", "Unhealthy", "Very Unhealthy", "Hazardous"),
+    ymin = c(0, 50, 100, 150, 200, 300),  # Corresponding lower bounds
+    ymax = c(50, 100, 150, 200, 300, Inf)  # Upper bounds
+  )
+  
+  # Define pollutant-specific AQI breakpoints
+  breakpoints <- list(
+    pm25 = c(0, 9.0, 35.4, 55.4, 125.4, 225.4, Inf),
+    pm10 = c(0, 54, 154, 254, 354, 424, Inf),
+    ozone = c(0, 0.054, 0.070, 0.085, 0.105, 0.200, Inf)
+  )
+  
+  # Get the appropriate breakpoints for the given pollutant
+  pollutant_breakpoints <- breakpoints[[pollutant]]
+  
+  # Determine the AQI category based on the value and the pollutant's breakpoints
+  for (i in 1:length(pollutant_breakpoints) - 1) {
+    if (value >= pollutant_breakpoints[i] && value < pollutant_breakpoints[i + 1]) {
+      return(aqi_categories$category[i])
+    }
+  }
+  
+  # If no category is found, return NA
+  return(NA)
+}
+
+
+calculate_aqi_pm25 <- function(pm25) {
+  if (is.na(pm25)) return(NA)
+  if (pm25 <= 9.0) {
+    return(50 * pm25 / 9.0)  # Good
+  } else if (pm25 <= 35.4) {
+    return(50 + (100 - 50) * (pm25 - 9.1) / (35.4 - 9.1))  # Moderate
+  } else if (pm25 <= 55.4) {
+    return(100 + (150 - 100) * (pm25 - 35.5) / (55.4 - 35.5))  # Unhealthy for Sensitive Groups
+  } else if (pm25 <= 125.4) {
+    return(150 + (200 - 150) * (pm25 - 55.5) / (125.4 - 55.5))  # Unhealthy
+  } else if (pm25 <= 225.4) {
+    return(200 + (300 - 200) * (pm25 - 125.5) / (225.4 - 125.5))  # Very Unhealthy
+  } else if (pm25 <= 500.4) {
+    return(300 + (500 - 300) * (pm25 - 225.5) / (500.4 - 225.5))  # Hazardous
+  } else {
+    return(NA)  # Above AQI range
+  }
+}
+
+calculate_aqi_pm10 <- function(pm10) {
+  # Return NA if the input is NA or NaN
+  if (is.na(pm10) || is.nan(pm10)) {
+    return(NA)
+  }
+  if (pm10 <= 54) {
+    return(50 * pm10 / 54)  # Good
+  } else if (pm10 <= 154) {
+    return(50 + (100 - 50) * (pm10 - 55) / (154 - 55))  # Moderate
+  } else if (pm10 <= 254) {
+    return(100 + (150 - 100) * (pm10 - 155) / (254 - 155))  # Unhealthy for Sensitive Groups
+  } else if (pm10 <= 354) {
+    return(150 + (200 - 150) * (pm10 - 255) / (354 - 255))  # Unhealthy
+  } else if (pm10 <= 424) {
+    return(200 + (300 - 200) * (pm10 - 355) / (424 - 355))  # Very Unhealthy
+  } else if (pm10 <= 604) {
+    return(300 + (500 - 300) * (pm10 - 425) / (604 - 425))  # Hazardous
+  } else {
+    return(NA)  # Above AQI range
+  }
+}
+
+calculate_aqi_o3 <- function(o3) {
+  if (is.na(o3)) {
+    return(NA)  # Return NA if o3 is NA
+  } else if (o3 <= 0.054) {
+    return(50 * o3 / 0.054)  # Good
+  } else if (o3 <= 0.070) {
+    return(50 + (100 - 50) * (o3 - 0.055) / (0.070 - 0.055))  # Moderate
+  } else if (o3 <= 0.085) {
+    return(100 + (150 - 100) * (o3 - 0.071) / (0.085 - 0.071))  # Unhealthy for Sensitive Groups
+  } else if (o3 <= 0.105) {
+    return(150 + (200 - 150) * (o3 - 0.086) / (0.105 - 0.086))  # Unhealthy
+  } else if (o3 <= 0.200) {
+    return(200 + (300 - 200) * (o3 - 0.106) / (0.200 - 0.106))  # Very Unhealthy
+  } else if (o3 <= 0.604) {
+    return(300 + (500 - 300) * (o3 - 0.201) / (0.604 - 0.201))  # Hazardous
+  } else {
+    return(NA)  # Above AQI range
+  }
+}
+
+```
+
+#Site Info
+```{r}
+
+site_names = c(
+    "ALotMatter", "Ark", "BayBrook", "Bilingual", "FederalHillPrep", "Filbert",
+    "ToolBank", "ConventionCenter", "Stillmeadow", "StrengthToLove", "Waterfront",
+    "BUGS", "FortMcHenry", "WestCovingtonPark", "Barclay"
+  )
+
+#Site Information
+site_info <- data.frame(
+  site = c(
+    "ALotMatter", "Ark","BayBrook", "Bilingual", "FederalHillPrep", "Filbert",
+    "ToolBank", "ConventionCenter", "Stillmeadow", "StrengthToLove", "Waterfront",
+    "BUGS", "FortMcHenry", "WestCovingtonPark", "Barclay"
+  ),
+  site_name = c(
+    "A Lot Matter", "Ark Church","Bay Brook Elementary/Middle School", "Bilingual Christian Church", "Federal Hill Preparatory School", "Filbert Street Garden",
+    "Baltimore Community ToolBank", "Convention Center", "Stillmeadow Community Fellowship", "Strength to Love II Farm", "Waterfront Partnership Garage",
+    "Baltimore Urban Gardening with Students (BUGS)", "Fort McHenry Research Wetland", "West Covington Park", "Barclay School"
+  ),
+  social_vuln_score = c(
+    81.58, 88.13, 90.14, 73.29, 4.82, 90.14,
+    49.05, 43.66, 49.92, 62.09, 42.3,
+    9.55, 5.27, 8.74, 11.8
+  ),
+  social_vuln_category = c(
+    "High", "High", "High", "High", "Low", "High",
+    "Moderate", "Moderate", "Moderate", "Moderate", "Moderate",
+    "Low", "Low", "Low", "Low"
+  ),
+  longitude = c(
+    -76.64776, -76.63861, -76.597796, -76.5452427, -76.6111, -76.591884,
+    -76.6312967, -76.616697, -76.6994, -76.6471, -76.60467,
+    -76.5967, -76.5843, -76.6155135, -76.6114
+  ),
+  latitude = c(
+    39.29743, 39.26333, 39.22637, 39.3010944, 39.2775, 39.224681,
+    39.27796748, 39.28509, 39.2811, 39.30381, 39.28584,
+    39.2817, 39.26417, 39.2619618, 39.3242
+  ),
+  # Redlining data columns (NA for missing data)
+  housing_grade = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  industrial_commercial = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  fav_infl = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  det_infl = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  inhab_jobs = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  inhab_blackpop = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  inhab_income = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  sales_demands = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA),
+  rental_demand = c(NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA, NA)
+)
+
+# Make sure the category is a factor with the desired order
+site_info$social_vuln_category <- factor(
+  site_info$social_vuln_category,
+  levels = c("High", "Moderate", "Low")
+)
+
+# Order the data frame
+site_info <- site_info[order(site_info$social_vuln_category), ]
+
+```
+
+#Clean
+```{r}
+
+data_dir <- "~/Dropbox/Bmore_AQI/Data/sensor_data"
+
+# Initialize an empty list to store cleaned data for each site
+all_sites_data <- list()
+
+# Process each site's data with error handling and memory management
+#print(paste("Data directory:", data_dir))
+#print(paste("Directory exists:", dir.exists(data_dir)))
+#print("Available files in directory:")
+#print(list.files(data_dir))
+
+for (site in site_names) {
+  tryCatch({
+    # Use ignore.case = TRUE to match files regardless of capitalization
+    file_list <- list.files(path = data_dir, 
+                           pattern = paste0("^", site), 
+                           full.names = TRUE,
+                           ignore.case = TRUE)
+    
+    print(paste("\nProcessing site:", site))
+    print(paste("Files found:", paste(file_list, collapse = ", ")))
+    
+    if (length(file_list) == 0) {
+      warning(paste("No files found for site:", site))
+      next
+    }
+    
+    # Read and process each file separately
+    site_data_list <- lapply(file_list, function(file) {
+      tryCatch({
+        print(paste("Reading file:", file))
+        if (!file.exists(file)) {
+          warning(paste("File does not exist:", file))
+          return(NULL)
+        }
+        
+        # Read the data
+        data <- data.table::fread(file)
+        print(paste("File read successfully. Columns:", ncol(data)))
+        
+        # Add site column immediately after reading
+        data[, site := site]
+        
+        # Print first few rows to understand data structure
+        print("First few rows of data:")
+        print(head(data))
+        
+        # Set column names based on number of columns
+        if (ncol(data) == 17) {  # Now 17 because we added the site column
+          setnames(data, c("timestamp", "arduino_id", "program", "bme_temp_c", "bme_pressure_hpa", 
+                          "bme_humidity_percent", "bme_voc_ppm", "bme_altitude_m", "k30_co2_ppm", 
+                          "ozone_ppb", "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3", 
+                          "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3", "site"))
+          print(paste("Successfully processed file:", file))
+          return(data)
+        } else {
+          warning(paste("File", file, "has", ncol(data), "columns (excluding site column). Expected 16. Skipping."))
+          print("Column names found:")
+          print(names(data))
+          return(NULL)
+        }
+      }, error = function(e) {
+        warning(paste("Error processing file", file, ":", e$message))
+        return(NULL)
+      })
+    })
+    
+    # Remove NULL entries and combine site data
+    site_data_list <- site_data_list[!sapply(site_data_list, is.null)]
+    if (length(site_data_list) > 0) {
+      site_data <- data.table::rbindlist(site_data_list, fill = TRUE)
+      all_sites_data[[site]] <- site_data
+      print(paste("Successfully processed site", site, "with", nrow(site_data), "rows"))
+    } else {
+      warning(paste("No valid data found for site", site))
+    }
+    
+    # Clean up memory
+    rm(site_data_list)
+    gc()
+    
+  }, error = function(e) {
+    warning(paste("Error processing site", site, ":", e$message))
+  })
+}
+
+# Print detailed summary of processed data
+print("\nDetailed Summary of Processed Data:")
+print(paste("Number of sites processed:", length(all_sites_data)))
+if (length(all_sites_data) > 0) {
+  print("Sites processed:")
+  print(names(all_sites_data))
+  print("\nRows per site:")
+  for (site in names(all_sites_data)) {
+    print(paste(site, ":", nrow(all_sites_data[[site]])))
+  }
+} else {
+  print("No sites were successfully processed")
+}
+
+# Check if we have any data before proceeding
+if (length(all_sites_data) == 0) {
+  stop("No data was successfully processed from any site. Please check your data files and paths.")
+}
+
+# Combine all site data in chunks to manage memory
+chunk_size <- 5  # Process 5 sites at a time
+site_names <- names(all_sites_data)
+
+if (length(site_names) > 0) {
+  # Create chunks only if we have sites to process
+  site_chunks <- split(site_names, ceiling(seq_along(site_names)/chunk_size))
+  
+  merged_data <- data.table()
+  for (chunk in site_chunks) {
+    print(paste("Processing chunk:", paste(chunk, collapse = ", ")))
+    chunk_data <- data.table::rbindlist(all_sites_data[chunk], fill = TRUE)
+    merged_data <- rbind(merged_data, chunk_data, fill = TRUE)
+    rm(chunk_data)
+    gc()
+  }
+} else {
+  stop("No valid sites found to process")
+}
+
+# Clean up memory
+rm(all_sites_data)
+gc()
+
+#Replace invalid values (-7999) with NA
+merged_data[merged_data == -7999] <- NA
+
+
+#Convert Timestamps to Standard Format
+convert_timestamp <- function(ts) {
+  # Try UTC first
+  ts_parsed <- ymd_hms(ts, tz = "UTC", quiet = TRUE)
+  # If that fails, try mdy_hm
+  if (is.na(ts_parsed)) {
+    ts_parsed <- mdy_hm(ts, tz = "UTC", quiet = TRUE)
+  }
+  return(ts_parsed)
+}
+
+# Ensure timestamp column is character before conversion
+merged_data[, timestamp := as.character(timestamp)]
+
+# Apply the conversion function - vectorized version
+merged_data[, timestamp := as.POSIXct(
+  ifelse(
+    !is.na(ymd_hms(timestamp, tz = "UTC", quiet = TRUE)),
+    ymd_hms(timestamp, tz = "UTC", quiet = TRUE),
+    mdy_hm(timestamp, tz = "UTC", quiet = TRUE)
+  )
+)]
+
+merged_data <- merged_data[!is.na(timestamp)]
+
+# Ensure timestamp is in POSIXct format
+merged_data[, timestamp := as.POSIXct(timestamp)]
+
+merged_data <- merged_data[!duplicated(merged_data$timestamp), ]
+
+# Round to the nearest hour
+merged_data[, timestamp_hour := floor_date(timestamp, unit = "hour")]
+
+merged_data <- merged_data[timestamp > as.Date("2024-12-01 00:00:00") & 
+                                  timestamp < as.Date("2027-05-13 00:00:00")]
+
+# Check the cleaned data
+head(merged_data)
+merged_data$ozone_ppb[is.nan(merged_data$ozone_ppb)]<-NA
+
+#Ozone comes in ppb-- converting now to ppm
+merged_data$ozone_ppm <- merged_data$ozone_ppb /1000
+
+# Add site information (including coordinates) to merged_data
+merged_data <- merge(merged_data, 
+                    site_info[, c("site", "longitude", "latitude", "social_vuln_score", "social_vuln_category")], 
+                    by = "site", 
+                    all.x = TRUE)
+
+# Reorder columns in merged_data
+setcolorder(merged_data, c("timestamp", "site", "longitude", "latitude", 
+                          "social_vuln_score", "social_vuln_category",
+                          "arduino_id", "program", "bme_temp_c", "bme_pressure_hpa", 
+                          "bme_humidity_percent", "bme_voc_ppm", "bme_altitude_m", 
+                          "k30_co2_ppm", "ozone_ppb", "ozone_ppm",
+                          "sensor1_pm1_ugm3", "sensor1_pm2.5_ugm3", "sensor1_pm10_ugm3", 
+                          "sensor2_pm1_ugm3", "sensor2_pm2.5_ugm3", "sensor2_pm10_ugm3"))
+```
+
+
+# Sensor Health Detection
+```{r}
+# Apply sensor health detection to merged data
+print("Detecting sensor health issues...")
+
+# Try the main function first, fall back to simple check if it fails
+tryCatch({
+  merged_data <- add_sensor_health_columns(merged_data, site_col = "site", time_col = "timestamp")
+  print("Main sensor health detection completed successfully")
+}, error = function(e) {
+  print(paste("Main sensor health detection failed:", e$message))
+  print("Using simple fallback sensor health check...")
+  merged_data <- simple_sensor_health_check(merged_data, site_col = "site")
+})
+
+# Create sensor health summary
+sensor_health_summary <- create_sensor_health_summary(merged_data, site_col = "site")
+
+# Display sensor health summary
+print("Sensor Health Summary:")
+print(sensor_health_summary)
+
+# Show sites with potential sensor issues
+print("\nSites with potential sensor issues:")
+issues_summary <- sensor_health_summary %>%
+  filter(pm25_sensor1_health != "Good" | pm25_sensor2_health != "Good" | 
+         pm10_sensor1_health != "Good" | pm10_sensor2_health != "Good" |
+         ozone_health != "Good" | co2_health != "Good")
+
+if (nrow(issues_summary) > 0) {
+  print(issues_summary)
+} else {
+  print("No sensor issues detected!")
+}
+
+# Detailed sensor health assessment with error handling
+print("\nDetailed sensor health assessment:")
+tryCatch({
+  detailed_health <- detect_sensor_health(merged_data, site_col = "site", time_col = "timestamp")
+  print(detailed_health[detailed_health$health_status != "Good", ])
+}, error = function(e) {
+  print(paste("Detailed health assessment failed:", e$message))
+  print("Skipping detailed assessment...")
+  detailed_health <- data.frame()  # Create empty data frame for later use
+})
+
+# Add health status to site info for reference
+site_info <- merge(site_info, sensor_health_summary, by = "site", all.x = TRUE)
+```
+
+
+#Hourly
+```{r}
+# Compute hourly averages grouped by site and timestamp_hour
+hourly_avg <- merged_data[, .(
+  sensor1_pm1_ugm3_avg = mean(sensor1_pm1_ugm3, na.rm = TRUE),
+  sensor2_pm1_ugm3_avg = mean(sensor2_pm1_ugm3, na.rm = TRUE),
+  sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
+  sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
+  sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
+  sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  pm1_ugm3_avg = mean(c(sensor1_pm1_ugm3, sensor2_pm1_ugm3), na.rm = TRUE),
+  pm2.5_ugm3_avg = mean(c(sensor1_pm2.5_ugm3, sensor2_pm2.5_ugm3), na.rm = TRUE),
+  pm10_ugm3_avg = mean(c(sensor1_pm10_ugm3, sensor2_pm10_ugm3), na.rm = TRUE),
+  bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
+  bme_humidity_percent_avg  = mean(bme_humidity_percent, na.rm = TRUE),
+  ozone_ppm_avg  = mean(ozone_ppm, na.rm = TRUE),
+  k30_co2_ppm_avg  = mean(k30_co2_ppm, na.rm = TRUE)
+), by = .(site, timestamp_hour)]
+
+# Add site information (coordinates and social vulnerability) to hourly data
+hourly_avg <- merge(hourly_avg, 
+                   site_info[, c("site", "longitude", "latitude", "social_vuln_score", "social_vuln_category")], 
+                   by = "site", 
+                   all.x = TRUE)
+
+# Reorder columns in hourly_avg
+setcolorder(hourly_avg, c("timestamp_hour", "site", "longitude", "latitude",
+                        "social_vuln_score", "social_vuln_category",
+                        "sensor1_pm1_ugm3_avg", "sensor2_pm1_ugm3_avg", 
+                        "pm1_ugm3_avg",
+                        "sensor1_pm2.5_ugm3_avg", "sensor2_pm2.5_ugm3_avg", 
+                        "pm2.5_ugm3_avg",
+                        "sensor1_pm10_ugm3_avg", "sensor2_pm10_ugm3_avg",
+                        "pm10_ugm3_avg",
+                        "bme_temp_c_avg", "bme_humidity_percent_avg",
+                        "ozone_ppm_avg", "k30_co2_ppm_avg"))
+
+hourly_avg$ozone_ppm_avg[is.nan(hourly_avg$ozone_ppm_avg)]<-NA
+
+# Add sensor health columns to hourly data
+tryCatch({
+  hourly_avg <- add_sensor_health_columns(hourly_avg, site_col = "site", time_col = "timestamp_hour")
+  print("Hourly sensor health detection completed successfully")
+}, error = function(e) {
+  print(paste("Hourly sensor health detection failed:", e$message))
+  print("Using simple fallback for hourly data...")
+  hourly_avg <- simple_sensor_health_check(hourly_avg, site_col = "site")
+})
+
+```
+
+#Daily
+```{r}
+
+merged_data[, timestamp_day := floor_date(timestamp, unit = "day")]
+
+# Compute daily averages
+daily_avg <- merged_data[, .(
+  sensor1_pm1_ugm3_avg = mean(sensor1_pm1_ugm3, na.rm = TRUE),
+  sensor2_pm1_ugm3_avg = mean(sensor2_pm1_ugm3, na.rm = TRUE),
+  sensor1_pm2.5_ugm3_avg = mean(sensor1_pm2.5_ugm3, na.rm = TRUE),
+  sensor2_pm2.5_ugm3_avg = mean(sensor2_pm2.5_ugm3, na.rm = TRUE),
+  sensor1_pm10_ugm3_avg  = mean(sensor1_pm10_ugm3, na.rm = TRUE),
+  sensor2_pm10_ugm3_avg  = mean(sensor2_pm10_ugm3, na.rm = TRUE),
+  pm1_ugm3_avg = mean(c(sensor1_pm1_ugm3, sensor2_pm1_ugm3), na.rm = TRUE),
+  pm2.5_ugm3_avg = mean(c(sensor1_pm2.5_ugm3, sensor2_pm2.5_ugm3), na.rm = TRUE),
+  pm10_ugm3_avg = mean(c(sensor1_pm10_ugm3, sensor2_pm10_ugm3), na.rm = TRUE),
+  bme_temp_c_avg  = mean(bme_temp_c, na.rm = TRUE),
+  bme_humidity_percent_avg  = mean(bme_humidity_percent, na.rm = TRUE),
+  ozone_ppm_avg  = mean(ozone_ppm, na.rm = TRUE),
+  k30_co2_ppm_avg  = mean(k30_co2_ppm, na.rm = TRUE)
+), by = .(site, timestamp_day)]
+
+# Add longitude and latitude to daily data
+daily_avg <- merge(daily_avg, 
+                  site_info[, c("site", "longitude", "latitude")], 
+                  by = "site", 
+                  all.x = TRUE)
+
+# Add social vulnerability info to daily data
+daily_avg <- merge(daily_avg, 
+                  site_info[, c("site", "social_vuln_score", "social_vuln_category")], 
+                  by = "site", 
+                  all.x = TRUE)
+
+# Reorder columns in daily_avg
+setcolorder(daily_avg, c("timestamp_day", "site", "longitude", "latitude",
+                        "social_vuln_score", "social_vuln_category",
+                        "sensor1_pm1_ugm3_avg", "sensor2_pm1_ugm3_avg", 
+                        "pm1_ugm3_avg",
+                        "sensor1_pm2.5_ugm3_avg", "sensor2_pm2.5_ugm3_avg", 
+                        "pm2.5_ugm3_avg",
+                        "sensor1_pm10_ugm3_avg", "sensor2_pm10_ugm3_avg",
+                        "pm10_ugm3_avg",
+                        "bme_temp_c_avg", "bme_humidity_percent_avg",
+                        "ozone_ppm_avg", "k30_co2_ppm_avg"))
+
+daily_avg$ozone_ppm_avg[is.nan(daily_avg$ozone_ppm_avg)]<-NA
+
+# Check for NaN values in PM10 measurements
+daily_avg$pm10_ugm3_avg[is.nan(daily_avg$pm10_ugm3_avg)] <- NA
+
+daily_avg[, `:=`(
+  aqi_pm25 = sapply(pm2.5_ugm3_avg, calculate_aqi_pm25),
+  aqi_pm10 = sapply(pm10_ugm3_avg, calculate_aqi_pm10)
+)]
+
+# Add sensor health columns to daily data
+tryCatch({
+  daily_avg <- add_sensor_health_columns(daily_avg, site_col = "site", time_col = "timestamp_day")
+  print("Daily sensor health detection completed successfully")
+}, error = function(e) {
+  print(paste("Daily sensor health detection failed:", e$message))
+  print("Using simple fallback for daily data...")
+  daily_avg <- simple_sensor_health_check(daily_avg, site_col = "site")
+})
+
+```
+
+
+#Sensor Health Visualization
+```{r}
+# Create a summary plot of sensor health by site
+sensor_health_plot <- ggplot(sensor_health_summary, aes(x = site)) +
+  geom_point(aes(y = "PM2.5 Sensor 1", color = pm25_sensor1_health), size = 4) +
+  geom_point(aes(y = "PM2.5 Sensor 2", color = pm25_sensor2_health), size = 4) +
+  geom_point(aes(y = "PM10 Sensor 1", color = pm10_sensor1_health), size = 4) +
+  geom_point(aes(y = "PM10 Sensor 2", color = pm10_sensor2_health), size = 4) +
+  geom_point(aes(y = "Ozone", color = ozone_health), size = 4) +
+  geom_point(aes(y = "CO2", color = co2_health), size = 4) +
+  scale_color_manual(values = c("Good" = "green", "Stuck" = "red", "Low Variance" = "orange", 
+                               "Out of Range" = "purple", "Large Jumps" = "brown", 
+                               "High Missing Data" = "gray")) +
+  labs(title = "Sensor Health Status by Site and Sensor Type",
+       x = "Site", y = "Sensor Type", color = "Health Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(size = 16, face = "bold"))
+
+print(sensor_health_plot)
+
+# Create a timeline plot showing when sensors had issues
+daily_health_timeline <- daily_avg %>%
+  select(timestamp_day, site, pm25_sensor1_health, pm25_sensor2_health, 
+         pm10_sensor1_health, pm10_sensor2_health, ozone_health, co2_health) %>%
+  gather(key = "sensor", value = "health_status", -timestamp_day, -site) %>%
+  filter(health_status != "Good") %>%
+  ggplot(aes(x = timestamp_day, y = site, color = sensor)) +
+  geom_point(aes(shape = health_status), size = 3) +
+  scale_shape_manual(values = c("Stuck" = 16, "Low Variance" = 17, "Out of Range" = 18, 
+                               "Large Jumps" = 19, "High Missing Data" = 20)) +
+  labs(title = "Timeline of Sensor Issues",
+       x = "Date", y = "Site", color = "Sensor", shape = "Issue Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(size = 16, face = "bold"))
+
+print(daily_health_timeline)
+
+# Create a summary table of sensor issues
+if (nrow(detailed_health) > 0) {
+  sensor_issues_summary <- detailed_health %>%
+    filter(health_status != "Good") %>%
+    group_by(site, sensor_type, health_status) %>%
+    summarise(
+      n_issues = n(),
+      avg_readings = mean(total_readings, na.rm = TRUE),
+      avg_missing = mean(missing_readings, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(site, sensor_type, health_status)
+
+  print("Summary of Sensor Issues:")
+  print(sensor_issues_summary)
+} else {
+  print("No detailed sensor issues data available")
+}
+
+# Create a heatmap of sensor health by site and sensor type
+health_heatmap_data <- sensor_health_summary %>%
+  select(site, pm25_sensor1_health, pm25_sensor2_health, 
+         pm10_sensor1_health, pm10_sensor2_health, ozone_health, co2_health) %>%
+  gather(key = "sensor", value = "health_status", -site) %>%
+  mutate(health_numeric = case_when(
+    health_status == "Good" ~ 0,
+    health_status == "Low Variance" ~ 1,
+    health_status == "Large Jumps" ~ 2,
+    health_status == "Out of Range" ~ 3,
+    health_status == "Stuck" ~ 4,
+    health_status == "High Missing Data" ~ 5,
+    TRUE ~ 0
+  ))
+
+health_heatmap <- ggplot(health_heatmap_data, aes(x = sensor, y = site, fill = health_numeric)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "green", mid = "yellow", high = "red", 
+                       name = "Issue Severity", 
+                       breaks = c(0, 1, 2, 3, 4, 5),
+                       labels = c("Good", "Low Variance", "Large Jumps", 
+                                 "Out of Range", "Stuck", "High Missing Data")) +
+  labs(title = "Sensor Health Heatmap",
+       x = "Sensor Type", y = "Site") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(size = 16, face = "bold"))
+
+print(health_heatmap)
+
+```
